@@ -1,1 +1,56 @@
 # TON-RevShare
+
+####################################################################################################
+
+To add TON RevShare Wallet in to your project:
+#Storage:
+
+(cell) load_data() inline {
+    var ds = get_data().begin_parse();
+    return ds~load_ref(); ;; revshare_wallet_code
+}
+
+() save_data(cell revshare_wallet_code) impure inline {
+    set_data(begin_cell()
+        .store_ref(revshare_wallet_code)
+    .end_cell());
+}
+
+
+#To create TON RevShare Wallet address:
+
+cell calculate_wallet_state_init(slice ref_id, cell revshare_wallet_code) {
+    cell data = begin_cell().store_uint(slice_hash(ref_id), 256).end_cell();
+    return begin_cell().store_uint(0, 2).store_dict(revshare_wallet_code).store_dict(data).store_uint(0, 1).end_cell();
+}
+
+slice calculate_wallet_address(int wc, cell state_init) {
+    return begin_cell().store_uint(4, 3).store_int(wc, 8).store_uint(cell_hash(state_init), 256).end_cell().begin_parse();
+}
+
+
+#Send transaction to TON RevShare Wallet:
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    cell state_init = calculate_wallet_state_init(in_msg_body, revshare_wallet_code);
+    slice addr = calculate_wallet_address(0, state_init);
+    var msg = begin_cell()
+          .store_uint(0x10, 6) 
+          .store_slice(to_address)
+          .store_coins(amount)
+          .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+          .store_uint(0, 32)
+          .store_slice("from-Name")
+          .end_cell();
+    send_raw_message(msg, send_mode);
+}
+
+
+#Getter to make TON RevShare Wallet address:
+
+slice get_wallet_address(slice ref_id) method_id {
+    var (revshare_wallet_code) = load_data();
+    return calculate_wallet_address(workchain(), calculate_wallet_state_init(ref_id, revshare_wallet_code));
+}
+
+####################################################################################################
