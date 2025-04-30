@@ -1,0 +1,105 @@
+#include "imports/stdlib.fc";
+
+int workchain() asm "0 PUSHINT";
+int min_deploy_value() asm "60000000 PUSHINT"; ;; 0.06 TON
+int deploy_value() asm "50000000 PUSHINT"; ;; 0.05 TON
+
+int error::invalid_command() asm "101 PUSHINT";
+int error::invalid_value() asm "102 PUSHINT";
+
+() force_chain(slice addr) impure {
+  (int wc, _) = parse_std_addr(addr);
+  throw_unless(100, wc == workchain());
+}
+
+(slice, int, cell) load_data() inline {
+  var ds = get_data().begin_parse();
+  return
+    (ds~load_msg_addr(), ;; owner_address
+     ds~load_uint(32), ;; count_wallets
+     ds~load_ref() ;; wallet_code
+     );
+}
+
+() save_data(slice owner_address, int count_wallets, cell wallet_code) impure inline {
+  set_data(begin_cell()
+    .store_slice(owner_address)
+    .store_uint(count_wallets, 32)
+    .store_ref(wallet_code)
+    .end_cell());
+}
+
+cell calculate_wallet_state_init(slice ref_id, cell wallet_code) {
+    cell data = begin_cell().store_uint(slice_hash(ref_id), 256).end_cell();
+    return begin_cell().store_uint(0, 2).store_dict(wallet_code).store_dict(data).store_uint(0, 1).end_cell();
+}
+
+slice calculate_wallet_address(int wc, cell state_init) {
+    return begin_cell().store_uint(4, 3).store_int(wc, 8).store_uint(cell_hash(state_init), 256).end_cell().begin_parse();
+}
+
+() deploy_wallet(slice ref_id, cell wallet_code, int amount, slice address) impure {
+  cell state_init = calculate_wallet_state_init(ref_id, wallet_code);
+  slice wallet_address = calculate_wallet_address(workchain(), state_init);
+  var msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(wallet_address)
+            .store_coins(amount)
+            .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
+            .store_ref(state_init)
+            .store_ref(begin_cell().store_slice(address).store_uint(0, 32).store_uint(0, 64).store_uint(0, 64).end_cell());
+  send_raw_message(msg.end_cell(), 1);
+}
+
+() send_msg_text(slice to_address, int amount, slice msg_body, int send_mode) impure inline {
+  var msg = begin_cell()
+            .store_uint(0x10, 6) 
+            .store_slice(to_address)
+            .store_coins(amount)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_uint(0, 32)
+            .store_slice(msg_body)
+            .end_cell();
+  send_raw_message(msg, send_mode);
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+
+    if (flags & 1) {
+        return ();
+    }
+    slice sender_address = cs~load_msg_addr();
+    var (owner_address, count_wallets, wallet_code) = load_data();
+
+    int op = in_msg_body~load_uint(32); 
+
+    if (op == 0 ) { 
+        throw_unless(error::invalid_value(), msg_value >= min_deploy_value());
+        throw_unless(error::invalid_command(), in_msg_body~load_uint(32) == 1700885102); ;; earn
+        in_msg_body~skip_bits(8); ;; skip space
+        deploy_wallet(in_msg_body, wallet_code, deploy_value(), sender_address);
+        count_wallets += 1;
+        save_data(owner_address, count_wallets, wallet_code);
+        return ();
+    }
+
+    throw(0xffffff);
+}
+
+;; get
+
+(slice, int) get_revshare_data() method_id {
+    var (owner_address, count_wallets, _) = load_data();
+    return (owner_address, count_wallets);
+}
+
+slice get_wallet_address(slice ref_id) method_id {
+    var (_, _, wallet_code) = load_data();
+    return calculate_wallet_address(workchain(), calculate_wallet_state_init(ref_id, wallet_code));
+}
