@@ -1,0 +1,110 @@
+#include "imports/stdlib.fc";
+
+int min_tons_for_storage() asm "50000000 PUSHINT"; ;; 0.05 TON
+
+int error::invalid_command() asm "101 PUSHINT";
+int error::invalid_address() asm "102 PUSHINT";
+
+int op::delete() asm "1 PUSHINT";
+int op::from() asm "2 PUSHINT";
+int op::profit() asm "3 PUSHINT";
+
+(int, int, slice, int, int, int) load_data() {
+    slice ds = get_data().begin_parse();
+    var ref_id = ds~load_uint(256);
+    if (ds.slice_bits() > 0) {
+      return (-1, ref_id, ds~load_msg_addr(), ds~load_uint(32), ds~load_uint(64), ds~load_uint(64));
+    } else {  
+      return (0, ref_id, null(), null(), null(), null()); ;; RevShare Wallet not initialized yet
+    }
+}
+
+() store_data(int ref_id, slice owner_address, int count, int ttl_earn, int ttl_withdraw) impure {
+    set_data(begin_cell()
+            .store_uint(ref_id, 256)
+            .store_slice(owner_address)
+            .store_uint(count, 32)
+            .store_uint(ttl_earn, 64)
+            .store_uint(ttl_withdraw, 64)
+            .end_cell()
+    );
+}
+
+() send_msg_text(slice to_address, int amount, slice msg_body, int send_mode) impure inline {
+    var msg = begin_cell()
+        .store_uint(0x10, 6) 
+        .store_slice(to_address)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_uint(0, 32)
+        .store_slice(msg_body)
+        .end_cell();
+    send_raw_message(msg, send_mode);
+}
+
+(slice, int) op_msg(slice msg) {
+    int first_char = msg.preload_uint(8);
+    if (first_char == 100) { ;; d
+        throw_unless(error::invalid_command(), msg~load_uint(48) == 110386773062757); ;; delete
+        return (msg, op::delete());
+    }
+    if (first_char == 102) { ;; f
+        throw_unless(error::invalid_command(), msg~load_uint(32) == 1718775661); ;; from
+        return (msg, op::from());
+    }  
+    if (first_char == 112) { ;; p
+        throw_unless(error::invalid_command(), msg~load_uint(48) == 123636797565300); ;; profit
+        return (msg, op::profit());
+    } 
+    return (msg, 0);
+}
+
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    if (flags & 1) {
+        return ();
+    }
+    slice sender_address = cs~load_msg_addr();
+    (int init?, int ref_id, slice owner_address, int count, int ttl_earn, int ttl_withdraw) = load_data();
+
+    if (~ init?) {
+        store_data(ref_id, in_msg_body~load_msg_addr(), in_msg_body~load_uint(32), in_msg_body~load_uint(64), in_msg_body~load_uint(64));
+        return ();
+    }
+
+    int op = in_msg_body~load_uint(32);
+    if (op == 0 ) { 
+        op = in_msg_body~op_msg(); 
+    }
+
+    if (op == op::from()) {
+        count += 1;
+        ttl_earn += msg_value;
+        store_data(ref_id, owner_address, count, ttl_earn, ttl_withdraw);
+        return ();
+    }
+
+    throw_unless(error::invalid_address(), equal_slices_bits(owner_address, sender_address));
+
+    if (op == op::delete()) {
+        send_msg_text(owner_address, 0, "RevShare Wallet destroyed", 160);
+        return ();
+    }
+
+    if (op == op::profit()) {
+        int withdraw = my_balance - min_tons_for_storage();
+        send_msg_text(owner_address, withdraw, "profit", 1);
+        ttl_withdraw += (withdraw - msg_value);
+        store_data(ref_id, owner_address, count, ttl_earn, ttl_withdraw);
+        return ();
+    }
+    throw(0xffffff);
+}
+
+;; Get
+(int, int, int, int, int, slice) get_wallet_data() method_id {
+  (int init?, int ref_id, slice owner_address, int count, int ttl_earn, int ttl_withdraw) = load_data();
+  return (init?, count, ttl_earn, ttl_withdraw, ref_id, owner_address);
+}
